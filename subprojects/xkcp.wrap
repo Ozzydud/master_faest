@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://github.com/XKCP/XKCP.git
+revision = 716f007dd73ef28d357b8162173646be574ad1b7
+depth = 1
+patch_directory = xkcp
+
+[provide]
+dependency_names = xkcp
