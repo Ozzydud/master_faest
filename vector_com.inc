@@ -17,6 +17,10 @@
 #include "util.hpp"
 #include "vole_key_index_permutation.hpp"
 
+#ifndef FAEST_TREE_TRAVERSAL
+#define FAEST_TREE_TRAVERSAL 0
+#endif
+
 namespace faest
 {
 
@@ -242,6 +246,115 @@ expand_tree(size_t delta, block128 iv, const typename LEAF_HASH::iv_t& leaf_iv, 
     }
 }
 
+template <size_t TAU, size_t DELTA_BITS, typename TREE_PRG, secpar S = TREE_PRG::secpar_v>
+static ALWAYS_INLINE void expand_tree_node_once(block128 iv, size_t tree_i,
+                                                unsigned int parent_depth,
+                                                block_secpar<S>* __restrict__ forest,
+                                                size_t node)
+{
+    typename TREE_PRG::tweak_t tweak = (parent_depth + 1) * TAU + tree_i;
+    expand_chunk<1, 2, TREE_PRG>(
+        iv, tweak, &forest[node], &forest[FIRST_CHILD<TAU, DELTA_BITS>(node, false)]);
+}
+
+template <size_t TAU, size_t DELTA_BITS, typename TREE_PRG, secpar S = TREE_PRG::secpar_v>
+static void expand_tree_depth_first_nodes(block128 iv, size_t tree_i,
+                                          block_secpar<S>* __restrict__ forest,
+                                          size_t node, unsigned int depth,
+                                          unsigned int tree_depth)
+{
+    if (depth == tree_depth)
+        return;
+
+    expand_tree_node_once<TAU, DELTA_BITS, TREE_PRG>(iv, tree_i, depth, forest, node);
+    size_t child = FIRST_CHILD<TAU, DELTA_BITS>(node, false);
+    expand_tree_depth_first_nodes<TAU, DELTA_BITS, TREE_PRG>(
+        iv, tree_i, forest, child, depth + 1, tree_depth);
+    expand_tree_depth_first_nodes<TAU, DELTA_BITS, TREE_PRG>(
+        iv, tree_i, forest, child + 1, depth + 1, tree_depth);
+}
+
+template <size_t TAU, size_t DELTA_BITS, typename TREE_PRG, secpar S = TREE_PRG::secpar_v>
+static void expand_tree_breadth_first_nodes(block128 iv, size_t tree_i,
+                                            block_secpar<S>* __restrict__ forest,
+                                            size_t root, unsigned int tree_depth)
+{
+    for (unsigned int depth = 0; depth < tree_depth; ++depth)
+    {
+        size_t level = FIRST_DESCENDENT_DEPTH<TAU, DELTA_BITS>(root, depth, false);
+        size_t width = (size_t)1 << depth;
+        for (size_t offset = 0; offset < width; ++offset)
+            expand_tree_node_once<TAU, DELTA_BITS, TREE_PRG>(
+                iv, tree_i, depth, forest, level + offset);
+    }
+}
+
+template <size_t TAU, size_t DELTA_BITS, size_t VOLE_WIDTH_SHIFT, typename LEAF_HASH,
+          secpar S = LEAF_HASH::secpar_v>
+static void hash_tree_leaves_chunked(const typename LEAF_HASH::iv_t& leaf_iv, size_t tree_i,
+                                     block_secpar<S>* __restrict__ forest,
+                                     unsigned int tree_depth, size_t root,
+                                     block_secpar<S>* __restrict__ leaves,
+                                     unsigned char* __restrict__ hashed_leaves)
+{
+    using VC = VECTOR_COMMITMENT_CONSTANTS<TAU, DELTA_BITS>;
+    constexpr size_t LEAF_CHUNK_SIZE = LEAF_HASH::PREFERRED_WIDTH;
+    size_t permuted_leaf_idx = vole_permute_key_index_inv<VOLE_WIDTH_SHIFT, VC::MAX_K>(0);
+    size_t leaf_count = (size_t)1 << tree_depth;
+    size_t first_leaf = FIRST_DESCENDENT_DEPTH<TAU, DELTA_BITS>(root, tree_depth, false);
+
+    for (size_t leaf_idx = 0; leaf_idx < leaf_count; leaf_idx += LEAF_CHUNK_SIZE)
+        write_leaves<TAU, DELTA_BITS, LEAF_CHUNK_SIZE, VOLE_WIDTH_SHIFT, LEAF_HASH>(
+            leaf_iv, (tree_depth + 1) * TAU + tree_i, tree_i, &forest[first_leaf + leaf_idx],
+            leaf_idx, &permuted_leaf_idx, leaves, hashed_leaves);
+}
+
+template <secpar S, size_t TAU, size_t DELTA_BITS, typename TREE_PRG, typename LEAF_HASH,
+          size_t VOLE_WIDTH_SHIFT>
+static void commit_from_roots_depth_first_impl(
+    block_secpar<S>* roots, block128 iv, block_secpar<S>* __restrict__ forest,
+    block_secpar<S>* __restrict__ leaves, unsigned char* __restrict__ hashed_leaves)
+{
+    using VC = VECTOR_COMMITMENT_CONSTANTS<TAU, DELTA_BITS>;
+    typename LEAF_HASH::iv_t leaf_iv(iv);
+
+    memcpy(forest, roots, TREES_IN_FOREST<TAU, DELTA_BITS>(false) * sizeof(block_secpar<S>));
+    for (size_t i = 0; i < TAU; ++i)
+    {
+        unsigned int depth = i < VC::NUM_MAX_K ? VC::MAX_K : VC::MIN_K;
+        expand_tree_depth_first_nodes<TAU, DELTA_BITS, TREE_PRG>(iv, i, forest, i, 0, depth);
+        hash_tree_leaves_chunked<TAU, DELTA_BITS, VOLE_WIDTH_SHIFT, LEAF_HASH>(
+            leaf_iv, i, forest, depth, i, leaves, hashed_leaves);
+
+        size_t pow_depth = (size_t)1 << depth;
+        leaves += pow_depth;
+        hashed_leaves += pow_depth * LEAF_HASH::hash_len;
+    }
+}
+
+template <secpar S, size_t TAU, size_t DELTA_BITS, typename TREE_PRG, typename LEAF_HASH,
+          size_t VOLE_WIDTH_SHIFT>
+static void commit_from_roots_breadth_first_impl(
+    block_secpar<S>* roots, block128 iv, block_secpar<S>* __restrict__ forest,
+    block_secpar<S>* __restrict__ leaves, unsigned char* __restrict__ hashed_leaves)
+{
+    using VC = VECTOR_COMMITMENT_CONSTANTS<TAU, DELTA_BITS>;
+    typename LEAF_HASH::iv_t leaf_iv(iv);
+
+    memcpy(forest, roots, TREES_IN_FOREST<TAU, DELTA_BITS>(false) * sizeof(block_secpar<S>));
+    for (size_t i = 0; i < TAU; ++i)
+    {
+        unsigned int depth = i < VC::NUM_MAX_K ? VC::MAX_K : VC::MIN_K;
+        expand_tree_breadth_first_nodes<TAU, DELTA_BITS, TREE_PRG>(iv, i, forest, i, depth);
+        hash_tree_leaves_chunked<TAU, DELTA_BITS, VOLE_WIDTH_SHIFT, LEAF_HASH>(
+            leaf_iv, i, forest, depth, i, leaves, hashed_leaves);
+
+        size_t pow_depth = (size_t)1 << depth;
+        leaves += pow_depth;
+        hashed_leaves += pow_depth * LEAF_HASH::hash_len;
+    }
+}
+
 template <secpar S, size_t TAU, size_t DELTA_BITS, prg TREE_PRG, leaf_hash LEAF_HASH,
           size_t VOLE_WIDTH_SHIFT>
 void ggm_forest_bavc<S, TAU, DELTA_BITS, TREE_PRG, LEAF_HASH, VOLE_WIDTH_SHIFT>::commit(
@@ -259,6 +372,23 @@ void ggm_forest_bavc<S, TAU, DELTA_BITS, TREE_PRG, LEAF_HASH, VOLE_WIDTH_SHIFT>:
     block_secpar<S>* roots, block128 iv, block_secpar<S>* __restrict__ forest,
     block_secpar<S>* __restrict__ leaves, unsigned char* __restrict__ hashed_leaves)
 {
+#if FAEST_TREE_TRAVERSAL == 1
+    commit_from_roots_depth_first_impl<S, TAU, DELTA_BITS, tree_prg_t, leaf_hash_t,
+                                       VOLE_WIDTH_SHIFT>(
+        roots, iv, forest, leaves, hashed_leaves);
+    return;
+#elif FAEST_TREE_TRAVERSAL == 2
+    commit_from_roots_breadth_first_impl<S, TAU, DELTA_BITS, tree_prg_t, leaf_hash_t,
+                                         VOLE_WIDTH_SHIFT>(
+        roots, iv, forest, leaves, hashed_leaves);
+    return;
+#elif FAEST_TREE_TRAVERSAL == 3
+    // Mode 3 is the current chunked hybrid strategy. It expands enough upper levels to create
+    // PRG-sized batches, then processes lower subtrees in chunks.
+#elif FAEST_TREE_TRAVERSAL != 0
+#error "Unsupported FAEST_TREE_TRAVERSAL value. Use 0=current, 1=DFS, 2=BFS, 3=chunked hybrid."
+#endif
+
     using VC = CONSTS;
     constexpr size_t TREE_CHUNK_SIZE = CHUNK_SIZE<tree_prg_t>;
     constexpr size_t TREE_CHUNK_SIZE_SHIFT = CHUNK_SIZE_SHIFT<tree_prg_t>;
