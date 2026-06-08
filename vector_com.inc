@@ -35,8 +35,26 @@ copy_prg_output(size_t n, size_t stretch, size_t j, size_t num_blocks, size_t re
     size_t prg_block_size = sizeof(typename PRG::block_t);
     size_t num_bytes = std::min(remaining_bytes, num_blocks * prg_block_size);
     for (size_t k = 0; k < n; ++k)
+    {
+#if defined(__AVX512F__)
+        if (num_bytes >= 64)
+        {
+            auto* dst = reinterpret_cast<unsigned char*>(&output[stretch * k]) + j * prg_block_size;
+            auto* src = reinterpret_cast<const unsigned char*>(&prg_output[num_blocks * k]);
+            size_t copied = 0;
+            for (; copied + 64 <= num_bytes; copied += 64)
+            {
+                __m512i x = _mm512_loadu_si512(reinterpret_cast<const void*>(src + copied));
+                _mm512_storeu_si512(reinterpret_cast<void*>(dst + copied), x);
+            }
+            if (copied < num_bytes)
+                memcpy(dst + copied, src + copied, num_bytes - copied);
+            continue;
+        }
+#endif
         memcpy(((unsigned char*) &output[stretch * k]) + j * prg_block_size,
                &prg_output[num_blocks * k], num_bytes);
+    }
 }
 
 // Take each of n block_secpars from input and expand it into stretch adjacent blocks in output.
@@ -385,8 +403,14 @@ void ggm_forest_bavc<S, TAU, DELTA_BITS, TREE_PRG, LEAF_HASH, VOLE_WIDTH_SHIFT>:
 #elif FAEST_TREE_TRAVERSAL == 3
     // Mode 3 is the current chunked hybrid strategy. It expands enough upper levels to create
     // PRG-sized batches, then processes lower subtrees in chunks.
+#elif FAEST_TREE_TRAVERSAL == 4
+#if !defined(__AVX512F__)
+#error "FAEST_TREE_TRAVERSAL=4 requires an AVX-512 build."
+#endif
+    // Mode 4 uses the current chunked hybrid traversal with AVX-512-enabled data movement in
+    // expand_chunk(). It is intended for comparing the same traversal strategy with wider SIMD.
 #elif FAEST_TREE_TRAVERSAL != 0
-#error "Unsupported FAEST_TREE_TRAVERSAL value. Use 0=current, 1=DFS, 2=BFS, 3=chunked hybrid."
+#error "Unsupported FAEST_TREE_TRAVERSAL value. Use 0=current, 1=DFS, 2=BFS, 3=chunked hybrid, 4=AVX-512 hybrid."
 #endif
 
     using VC = CONSTS;
