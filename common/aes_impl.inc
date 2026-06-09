@@ -7,9 +7,41 @@ aes_keygen_ecb(const block_secpar<S>* __restrict__ keys, aes_round_keys<S>* __re
     aes_keygen_impl<S, num_keys, blocks_per_key>(aeses, keys, data);
 }
 
+#ifndef FAEST_USE_VAES
+#define FAEST_USE_VAES 0
+#endif
+
+#if FAEST_USE_VAES && (!defined(__VAES__) || !defined(__AVX512F__))
+#error "FAEST_USE_VAES requires compiling with VAES and AVX-512F support."
+#endif
+
 template <secpar S, size_t num_keys, size_t blocks_per_key>
 inline void aes_ecb(const aes_round_keys<S>* __restrict__ aeses, block128* __restrict__ data)
 {
+#if FAEST_USE_VAES && defined(__VAES__) && defined(__AVX512F__)
+    if constexpr (blocks_per_key == 4)
+    {
+        for (size_t i = 0; i < num_keys; ++i)
+        {
+            __m512i state =
+                _mm512_loadu_si512(reinterpret_cast<const void*>(&data[i * blocks_per_key]));
+            __m512i round_key = _mm512_broadcast_i32x4(aeses[i].keys[0].data);
+            state = _mm512_xor_si512(state, round_key);
+
+            for (size_t round = 1; round < AES_ROUNDS<S>; ++round)
+            {
+                round_key = _mm512_broadcast_i32x4(aeses[i].keys[round].data);
+                state = _mm512_aesenc_epi128(state, round_key);
+            }
+
+            round_key = _mm512_broadcast_i32x4(aeses[i].keys[AES_ROUNDS<S>].data);
+            state = _mm512_aesenclast_epi128(state, round_key);
+            _mm512_storeu_si512(reinterpret_cast<void*>(&data[i * blocks_per_key]), state);
+        }
+        return;
+    }
+#endif
+
     // IIRC, GCC won't keep state in registers unless I make this a local variable.
     block128 state[num_keys * blocks_per_key];
     memcpy(state, data, sizeof(state));
