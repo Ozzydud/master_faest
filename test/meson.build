@@ -39,6 +39,7 @@ executable('bench',
   'bench_api.cpp',
   'bench_components.cpp',
   'bench_leaf_hash.cpp',
+  'bench_prg.cpp',
   'bench_variants.cpp',
   dependencies : [catch2_with_main_dep, faest_dep, randomness_os_dep]
 )
