@@ -14,6 +14,14 @@ ALWAYS_INLINE void aes_keygen_impl(
     const block_secpar<S>* __restrict__ keys,
     block128* __restrict__ output)
 {
+    if constexpr (num_keys == 1 && (S == secpar::s192 || S == secpar::s256))
+    {
+        aes_keygen_scalar_single<S>(aeses, keys[0]);
+        if constexpr (num_blocks > 0)
+            aes_ecb<S, num_keys, num_blocks>(aeses, output);
+        return;
+    }
+
     aes_keygen_state<S> keygen_states[(num_keys + KEYGEN_WIDTH - 1) / KEYGEN_WIDTH];
     aes_keygen_init(keygen_states, aeses, keys, num_keys);
 

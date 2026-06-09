@@ -9,6 +9,52 @@
 namespace faest
 {
 
+ALWAYS_INLINE uint32_t aes_subword_u32(uint32_t word)
+{
+    const __m128i word_repeated = _mm_set1_epi32(word);
+    const __m128i subword = _mm_aesenclast_si128(word_repeated, _mm_setzero_si128());
+    return static_cast<uint32_t>(_mm_cvtsi128_si32(subword));
+}
+
+ALWAYS_INLINE uint32_t aes_subword_rotword_u32(uint32_t word, uint32_t round_constant)
+{
+    const uint32_t rotword = (word >> 8) | (word << 24);
+    const __m128i word_repeated = _mm_set1_epi32(rotword);
+    const __m128i rcon = _mm_set1_epi32(round_constant);
+    const __m128i subword = _mm_aesenclast_si128(word_repeated, rcon);
+    return static_cast<uint32_t>(_mm_cvtsi128_si32(subword));
+}
+
+template <secpar S>
+ALWAYS_INLINE void aes_keygen_scalar_single(aes_round_keys<S>* round_keys, block_secpar<S> key)
+{
+    static_assert(S == secpar::s192 || S == secpar::s256);
+
+    constexpr size_t key_words = secpar_to_bits(S) / 32;
+    constexpr size_t expanded_words = 4 * (AES_ROUNDS<S> + 1);
+    uint32_t words[expanded_words];
+    memcpy(words, &key, secpar_to_bytes(S));
+
+    for (size_t i = key_words; i < expanded_words; ++i)
+    {
+        uint32_t temp = words[i - 1];
+        if (i % key_words == 0)
+        {
+            const uint32_t round_constant = aes_round_constants[i / key_words - 1];
+            temp = aes_subword_rotword_u32(temp, round_constant);
+        }
+        else if constexpr (S == secpar::s256)
+        {
+            if (i % key_words == 4)
+                temp = aes_subword_u32(temp);
+        }
+
+        words[i] = words[i - key_words] ^ temp;
+    }
+
+    memcpy(round_keys->keys, words, sizeof(round_keys->keys));
+}
+
 template <secpar S>
 ALWAYS_INLINE void aes_keygen_round(aes_keygen_state<S>* keygen_states, aes_round_keys<S>* aeses,
                                     size_t num_keys, size_t round)
