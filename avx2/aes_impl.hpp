@@ -78,6 +78,16 @@ ALWAYS_INLINE __m512i vaes_round_4_keys(__m512i state, const aes_round_keys<S>* 
 }
 
 template <secpar S>
+ALWAYS_INLINE __m512i vaes_round_with_key(__m512i state, __m512i round_key, size_t round)
+{
+    if (round == 0)
+        return _mm512_xor_si512(state, round_key);
+    if (round < AES_ROUNDS<S>)
+        return _mm512_aesenc_epi128(state, round_key);
+    return _mm512_aesenclast_epi128(state, round_key);
+}
+
+template <secpar S>
 ALWAYS_INLINE block128 aes_round_1_key(block128 state, const aes_round_keys<S>* aeses,
                                        size_t key_idx, size_t round)
 {
@@ -93,50 +103,6 @@ template <secpar S>
 ALWAYS_INLINE void aes_round(const aes_round_keys<S>* aeses, block128* state, size_t num_keys,
                              size_t evals_per_key, size_t round)
 {
-#if FAEST_USE_VAES && defined(__VAES__) && defined(__AVX512F__)
-    if (num_keys >= 4 && evals_per_key == 1)
-    {
-        size_t key_idx = 0;
-        for (; key_idx + 4 <= num_keys; key_idx += 4)
-        {
-            __m512i state_4 =
-                _mm512_loadu_si512(reinterpret_cast<const void*>(&state[key_idx]));
-            state_4 = vaes_round_4_keys<S>(state_4, aeses, key_idx, round);
-            _mm512_storeu_si512(reinterpret_cast<void*>(&state[key_idx]), state_4);
-        }
-        for (; key_idx < num_keys; ++key_idx)
-            state[key_idx] = aes_round_1_key<S>(state[key_idx], aeses, key_idx, round);
-        return;
-    }
-
-    if (num_keys >= 4 && evals_per_key == 2)
-    {
-        size_t key_idx = 0;
-        alignas(64) block128 lanes[4];
-        for (; key_idx + 4 <= num_keys; key_idx += 4)
-        {
-            for (size_t block_idx = 0; block_idx < 2; ++block_idx)
-            {
-                __m512i state_4 = vaes_set4_128(state[(key_idx + 0) * 2 + block_idx].data,
-                                                state[(key_idx + 1) * 2 + block_idx].data,
-                                                state[(key_idx + 2) * 2 + block_idx].data,
-                                                state[(key_idx + 3) * 2 + block_idx].data);
-                state_4 = vaes_round_4_keys<S>(state_4, aeses, key_idx, round);
-                _mm512_storeu_si512(reinterpret_cast<void*>(lanes), state_4);
-                state[(key_idx + 0) * 2 + block_idx] = lanes[0];
-                state[(key_idx + 1) * 2 + block_idx] = lanes[1];
-                state[(key_idx + 2) * 2 + block_idx] = lanes[2];
-                state[(key_idx + 3) * 2 + block_idx] = lanes[3];
-            }
-        }
-        for (; key_idx < num_keys; ++key_idx)
-            for (size_t block_idx = 0; block_idx < 2; ++block_idx)
-                state[key_idx * 2 + block_idx] =
-                    aes_round_1_key<S>(state[key_idx * 2 + block_idx], aeses, key_idx, round);
-        return;
-    }
-#endif
-
     PRAGMA_UNROLL(2*AES_PREFERRED_WIDTH)
     for (size_t i = 0; i < num_keys * evals_per_key; ++i)
         if (round == 0)
