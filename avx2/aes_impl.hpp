@@ -45,57 +45,23 @@ inline void aes_round_function(const aes_round_keys<S>* __restrict__ round_keys,
     *block = state;
 }
 
-#if FAEST_USE_VAES && defined(__VAES__) && defined(__AVX512F__)
-ALWAYS_INLINE __m512i vaes_set4_128(__m128i x0, __m128i x1, __m128i x2, __m128i x3)
-{
-    __m512i out = _mm512_castsi128_si512(x0);
-    out = _mm512_inserti32x4(out, x1, 1);
-    out = _mm512_inserti32x4(out, x2, 2);
-    out = _mm512_inserti32x4(out, x3, 3);
-    return out;
-}
-
+#if FAEST_USE_VAES && defined(__VAES__) && defined(__AVX512VL__)
 template <secpar S>
-ALWAYS_INLINE __m512i vaes_load_round_keys_4(const aes_round_keys<S>* aeses, size_t key_idx,
-                                             size_t round)
+ALWAYS_INLINE void vaes_encrypt_2_blocks_same_key(const aes_round_keys<S>* aes, block128* data)
 {
-    return vaes_set4_128(aeses[key_idx + 0].keys[round].data,
-                         aeses[key_idx + 1].keys[round].data,
-                         aeses[key_idx + 2].keys[round].data,
-                         aeses[key_idx + 3].keys[round].data);
-}
+    __m256i state = _mm256_loadu_si256(reinterpret_cast<const __m256i_u*>(data));
+    __m256i round_key = _mm256_broadcastsi128_si256(aes->keys[0].data);
+    state = _mm256_xor_si256(state, round_key);
 
-template <secpar S>
-ALWAYS_INLINE __m512i vaes_round_4_keys(__m512i state, const aes_round_keys<S>* aeses,
-                                        size_t key_idx, size_t round)
-{
-    const __m512i round_key = vaes_load_round_keys_4<S>(aeses, key_idx, round);
-    if (round == 0)
-        return _mm512_xor_si512(state, round_key);
-    if (round < AES_ROUNDS<S>)
-        return _mm512_aesenc_epi128(state, round_key);
-    return _mm512_aesenclast_epi128(state, round_key);
-}
+    for (size_t round = 1; round < AES_ROUNDS<S>; ++round)
+    {
+        round_key = _mm256_broadcastsi128_si256(aes->keys[round].data);
+        state = _mm256_aesenc_epi128(state, round_key);
+    }
 
-template <secpar S>
-ALWAYS_INLINE __m512i vaes_round_with_key(__m512i state, __m512i round_key, size_t round)
-{
-    if (round == 0)
-        return _mm512_xor_si512(state, round_key);
-    if (round < AES_ROUNDS<S>)
-        return _mm512_aesenc_epi128(state, round_key);
-    return _mm512_aesenclast_epi128(state, round_key);
-}
-
-template <secpar S>
-ALWAYS_INLINE block128 aes_round_1_key(block128 state, const aes_round_keys<S>* aeses,
-                                       size_t key_idx, size_t round)
-{
-    if (round == 0)
-        return state ^ aeses[key_idx].keys[round];
-    if (round < AES_ROUNDS<S>)
-        return {_mm_aesenc_si128(state.data, aeses[key_idx].keys[round].data)};
-    return {_mm_aesenclast_si128(state.data, aeses[key_idx].keys[round].data)};
+    round_key = _mm256_broadcastsi128_si256(aes->keys[AES_ROUNDS<S>].data);
+    state = _mm256_aesenclast_epi128(state, round_key);
+    _mm256_storeu_si256(reinterpret_cast<__m256i_u*>(data), state);
 }
 #endif
 
