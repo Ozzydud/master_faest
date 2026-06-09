@@ -96,6 +96,7 @@ ALWAYS_INLINE void aes_keygen_impl(
         aes_round_keys<secparam>* __restrict__ aeses,                                              \
         const block_secpar<secparam>* __restrict__ keys, block128* __restrict__ output);
 #define DEF_AES_KEYGEN_IMPL_SK(secparam, num_keys)                                                 \
+    DEF_AES_KEYGEN_IMPL_SKB(secparam, num_keys, 0)                                                 \
     DEF_AES_KEYGEN_IMPL_SKB(secparam, num_keys, 1)                                                 \
     DEF_AES_KEYGEN_IMPL_SKB(secparam, num_keys, 2)                                                 \
     DEF_AES_KEYGEN_IMPL_SKB(secparam, num_keys, 3)                                                 \

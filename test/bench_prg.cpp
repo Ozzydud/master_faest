@@ -80,6 +80,42 @@ static void bench_aes_ctr_prg_shape()
 }
 
 template <secpar S, size_t num_keys>
+static void bench_aes_keygen_batch_shape()
+{
+    using PRG = aes_ctr_prg<S>;
+
+    std::array<typename PRG::key_t, num_keys> keys;
+    std::generate(keys.begin(), keys.end(), rand<typename PRG::key_t>);
+
+    const std::string shape = std::to_string(num_keys) + " keys";
+
+    BENCHMARK("aes_keygen scalar loop - " + shape)
+    {
+        std::array<typename PRG::expanded_key_t, num_keys> local_expanded_keys;
+        for (size_t i = 0; i < num_keys; ++i)
+            aes_keygen<S>(&local_expanded_keys[i], keys[i]);
+        return reduce_round_keys<S>(local_expanded_keys);
+    };
+
+    BENCHMARK("aes_keygen_ecb batched only - " + shape)
+    {
+        std::array<typename PRG::expanded_key_t, num_keys> local_expanded_keys;
+        block128 dummy_output = block128::set_zero();
+        aes_keygen_ecb<S, num_keys, 0>(keys.data(), local_expanded_keys.data(), &dummy_output);
+        return reduce_round_keys<S>(local_expanded_keys);
+    };
+}
+
+template <secpar S>
+static void bench_aes_keygen_batch_secpar()
+{
+    bench_aes_keygen_batch_shape<S, 1>();
+    bench_aes_keygen_batch_shape<S, 2>();
+    bench_aes_keygen_batch_shape<S, 4>();
+    bench_aes_keygen_batch_shape<S, 8>();
+}
+
+template <secpar S, size_t num_keys>
 static void bench_aes_ctr_prg_key_count()
 {
     bench_aes_ctr_prg_shape<S, num_keys, 1>();
@@ -100,4 +136,10 @@ TEMPLATE_TEST_CASE("bench prg aes-ctr key schedule", "[.][bench][prg]", secpar12
                    secpar256_t)
 {
     bench_aes_ctr_prg_secpar<TestType::value>();
+}
+
+TEMPLATE_TEST_CASE("bench prg aes-keygen batch", "[.][bench][prg][keygen]", secpar128_t,
+                   secpar192_t, secpar256_t)
+{
+    bench_aes_keygen_batch_secpar<TestType::value>();
 }

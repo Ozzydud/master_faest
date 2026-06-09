@@ -19,7 +19,7 @@ template <secpar S, size_t num_keys, size_t blocks_per_key>
 inline void aes_ecb(const aes_round_keys<S>* __restrict__ aeses, block128* __restrict__ data)
 {
 #if FAEST_USE_VAES && defined(__VAES__) && defined(__AVX512VL__)
-    if constexpr (blocks_per_key == 2)
+    if constexpr (S == secpar::s192 && num_keys >= 8 && blocks_per_key == 2)
     {
         for (size_t i = 0; i < num_keys; ++i)
             vaes_encrypt_2_blocks_same_key<S>(&aeses[i], &data[i * blocks_per_key]);
