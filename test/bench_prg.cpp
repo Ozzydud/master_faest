@@ -9,6 +9,27 @@
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+template <size_t N>
+static block128 reduce_blocks(const std::array<block128, N>& blocks)
+{
+    block128 acc = block128::set_zero();
+    for (const auto& block : blocks)
+        acc = acc ^ block;
+    return acc;
+}
+
+template <secpar S, size_t N>
+static block128 reduce_round_keys(const std::array<aes_round_keys<S>, N>& round_keys)
+{
+    block128 acc = block128::set_zero();
+    for (const auto& key : round_keys)
+    {
+        acc = acc ^ key.keys[0];
+        acc = acc ^ key.keys[AES_ROUNDS<S>];
+    }
+    return acc;
+}
+
 template <secpar S, size_t num_keys, uint32_t blocks_per_key>
 static void bench_aes_ctr_prg_shape()
 {
@@ -36,7 +57,7 @@ static void bench_aes_ctr_prg_shape()
         std::array<typename PRG::expanded_key_t, num_keys> local_expanded_keys;
         for (size_t i = 0; i < num_keys; ++i)
             aes_keygen<S>(&local_expanded_keys[i], keys[i]);
-        return local_expanded_keys[0].keys[0];
+        return reduce_round_keys<S>(local_expanded_keys);
     };
 
     BENCHMARK("aes_ctr_prg::init keygen+encrypt - " + shape)
@@ -46,7 +67,7 @@ static void bench_aes_ctr_prg_shape()
         PRG::template init<num_keys, blocks_per_key>(keys.data(), local_expanded_keys.data(), iv,
                                                      tweaks.data(), counters.data(),
                                                      local_output.data());
-        return local_output[0];
+        return reduce_blocks(local_output);
     };
 
     BENCHMARK("aes_ctr_prg::gen encrypt only - " + shape)
@@ -54,7 +75,7 @@ static void bench_aes_ctr_prg_shape()
         std::array<typename PRG::block_t, num_keys * blocks_per_key> local_output;
         PRG::template gen<num_keys, blocks_per_key>(expanded_keys.data(), iv, tweaks.data(),
                                                     counters.data(), local_output.data());
-        return local_output[0];
+        return reduce_blocks(local_output);
     };
 }
 
