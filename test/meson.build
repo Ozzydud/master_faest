@@ -43,3 +43,8 @@ executable('bench',
   'bench_variants.cpp',
   dependencies : [catch2_with_main_dep, faest_dep, randomness_os_dep]
 )
+
+executable('profile_vole_commit',
+  'profile_vole_commit.cpp',
+  dependencies : [faest_dep]
+)
