@@ -1,0 +1,5 @@
+option('avx512_keccak',
+  type : 'boolean',
+  value : false,
+  description : 'Build XKCP KeccakP-1600 and KeccakP-1600-times4 with AVX-512 backends instead of AVX2.'
+)

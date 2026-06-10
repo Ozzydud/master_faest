@@ -33,16 +33,35 @@ keccak_avx2_sources = [
   'lib/low/KeccakP-1600-times4/AVX2/KeccakP-1600-times4-AVX2.c',
 ]
 
+keccak_avx512_include_dirs = [
+  'lib/low/KeccakP-1600/AVX512/',
+  'lib/low/KeccakP-1600/AVX512/SnP/',
+  'lib/low/KeccakP-1600-times4/AVX512/',
+  'lib/low/KeccakP-1600-times4/AVX512/SnP/',
+]
+keccak_avx512_sources = [
+  'lib/low/KeccakP-1600/AVX512/KeccakP-1600-AVX512.s',
+  'lib/low/KeccakP-1600-times4/AVX512/KeccakP-1600-times4-AVX512.c',
+]
+
+xkcp_c_args = []
 if host_machine.cpu_family() == 'x86_64' and host_machine.system() != 'darwin'
-  keccak_include_dirs += keccak_avx2_include_dirs
-  keccak_sources += keccak_avx2_sources
+  if get_option('avx512_keccak')
+    keccak_include_dirs += keccak_avx512_include_dirs
+    keccak_sources += keccak_avx512_sources
+    xkcp_c_args += ['-mavx512f', '-mavx512vl']
+  else
+    keccak_include_dirs += keccak_avx2_include_dirs
+    keccak_sources += keccak_avx2_sources
+  endif
 else
   keccak_include_dirs += keccak_generic_include_dirs
   keccak_sources += keccak_generic_sources
 endif
 
 xkcp_lib = static_library('xkcp', keccak_sources,
-  include_directories : keccak_include_dirs)
+  include_directories : keccak_include_dirs,
+  c_args : xkcp_c_args)
 
 xkcp_dep = declare_dependency(
   include_directories : keccak_include_dirs,
