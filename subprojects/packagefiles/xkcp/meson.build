@@ -34,6 +34,7 @@ keccak_avx2_sources = [
 ]
 
 keccak_avx512_include_dirs = [
+  'lib/low/KeccakP-1600/plain-64bits/',
   'lib/low/KeccakP-1600/AVX512/',
   'lib/low/KeccakP-1600/AVX512/SnP/',
   'lib/low/KeccakP-1600-times4/AVX512/',
