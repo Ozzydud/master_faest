@@ -100,7 +100,8 @@ template <typename P> struct profile_buffers
     static constexpr secpar S = P::secpar_v;
 
     explicit profile_buffers(uint64_t seed_value) : commitment((P::tau_v - 1) * CP::VOLE_ROWS / 8),
-                                                    check(CP::VOLE_COMMIT_CHECK_SIZE)
+                                                    check(CP::VOLE_COMMIT_CHECK_SIZE),
+                                                    delta_bytes(P::delta_bits_v)
     {
         splitmix64 rng(seed_value);
         seed = random_object<block_secpar<S>>(rng);
@@ -113,6 +114,12 @@ template <typename P> struct profile_buffers
                                 alignof(block_2secpar<S>));
         u = alloc_aligned_array<vole_block>(CP::VOLE_COL_BLOCKS);
         v = alloc_aligned_array<vole_block>(P::secpar_bits * CP::VOLE_COL_BLOCKS);
+        q = alloc_aligned_array<vole_block>(P::secpar_bits * CP::VOLE_COL_BLOCKS);
+
+        rng.fill(leaves, P::bavc_t::COMMIT_LEAVES * sizeof(block_secpar<S>));
+        rng.fill(commitment.data(), commitment.size());
+        for (auto& delta : delta_bytes)
+            delta = (rng.next() & 1) ? 0xff : 0x00;
     }
 
     profile_buffers(const profile_buffers&) = delete;
@@ -125,6 +132,7 @@ template <typename P> struct profile_buffers
         std::free(hashed_leaves);
         std::free(u);
         std::free(v);
+        std::free(q);
     }
 
     block_secpar<S> seed;
@@ -134,8 +142,10 @@ template <typename P> struct profile_buffers
     unsigned char* hashed_leaves = nullptr;
     vole_block* u = nullptr;
     vole_block* v = nullptr;
+    vole_block* q = nullptr;
     std::vector<uint8_t> commitment;
     std::vector<uint8_t> check;
+    std::vector<uint8_t> delta_bytes;
 };
 
 template <typename F> double run_loop(size_t iterations, F&& f)
@@ -148,10 +158,108 @@ template <typename F> double run_loop(size_t iterations, F&& f)
     return std::chrono::duration<double>(stop - start).count();
 }
 
+template <typename P> void run_convert_to_vole_sender(profile_buffers<P>& buffers)
+{
+    using CP = typename P::CONSTS;
+    using VC = typename P::CONSTS::VEC_COM;
+    constexpr auto S = P::secpar_v;
+
+    vole_block* v = buffers.v;
+    uint8_t* commitment = buffers.commitment.data();
+    block_secpar<S>* leaves_iter = buffers.leaves;
+    vole_block correction[CP::VOLE_COL_BLOCKS];
+
+    for (size_t i = 0; i < P::tau_v; ++i)
+    {
+        const unsigned int k = i < VC::NUM_MAX_K ? VC::MAX_K : VC::MIN_K;
+        const auto tweak = (static_cast<typename P::vole_prg_t::tweak_t>(1) << 31) + i;
+        if (!i)
+            vole_sender<P>(k, leaves_iter, buffers.iv, tweak, nullptr, v, buffers.u);
+        else
+        {
+            vole_sender<P>(k, leaves_iter, buffers.iv, tweak, buffers.u, v, correction);
+            std::memcpy(commitment, correction, CP::VOLE_ROWS / 8);
+            commitment += CP::VOLE_ROWS / 8;
+        }
+
+        leaves_iter += static_cast<size_t>(1) << k;
+        v += CP::VOLE_COL_BLOCKS * k;
+    }
+
+    if constexpr (P::zero_bits_in_delta_v > 0)
+        std::memset(v, 0, CP::VOLE_COL_BLOCKS * P::zero_bits_in_delta_v * sizeof(*v));
+
+    consume_bytes(buffers.u, CP::VOLE_ROWS / 8);
+    consume_bytes(buffers.v, P::secpar_bits * CP::VOLE_COL_BLOCKS * sizeof(vole_block));
+}
+
+template <typename P> void run_convert_to_vole_receiver(profile_buffers<P>& buffers)
+{
+    using CP = typename P::CONSTS;
+    using VC = typename P::CONSTS::VEC_COM;
+    constexpr auto S = P::secpar_v;
+
+    vole_block* q = buffers.q;
+    const uint8_t* commitment = buffers.commitment.data();
+    const uint8_t* delta_bytes = buffers.delta_bytes.data();
+    block_secpar<S>* leaves_iter = buffers.leaves;
+    vole_block correction[CP::VOLE_COL_BLOCKS];
+    if (CP::VOLE_COL_BLOCKS * sizeof(vole_block) != CP::VOLE_ROWS / 8)
+        correction[CP::VOLE_COL_BLOCKS - 1] = vole_block::set_zero();
+
+    for (size_t i = 0; i < P::tau_v; ++i)
+    {
+        const unsigned int k = i < VC::NUM_MAX_K ? VC::MAX_K : VC::MIN_K;
+        const auto tweak = (static_cast<typename P::vole_prg_t::tweak_t>(1) << 31) + i;
+        if (!i)
+            vole_receiver<P>(k, leaves_iter, buffers.iv, tweak, nullptr, q, delta_bytes);
+        else
+        {
+            std::memcpy(correction, commitment, CP::VOLE_ROWS / 8);
+            commitment += CP::VOLE_ROWS / 8;
+            vole_receiver<P>(k, leaves_iter, buffers.iv, tweak, correction, q, delta_bytes);
+        }
+
+        leaves_iter += static_cast<size_t>(1) << k;
+        q += CP::VOLE_COL_BLOCKS * k;
+        delta_bytes += k;
+    }
+
+    if constexpr (P::zero_bits_in_delta_v > 0)
+        std::memset(q, 0, CP::VOLE_COL_BLOCKS * P::zero_bits_in_delta_v * sizeof(*q));
+
+    consume_bytes(buffers.q, P::secpar_bits * CP::VOLE_COL_BLOCKS * sizeof(vole_block));
+}
+
+template <typename P, bool receiver, bool max_k>
+void run_single_small_vole(profile_buffers<P>& buffers)
+{
+    using CP = typename P::CONSTS;
+    using VC = typename P::CONSTS::VEC_COM;
+
+    constexpr unsigned int k = max_k ? VC::MAX_K : VC::MIN_K;
+    const auto tweak = static_cast<typename P::vole_prg_t::tweak_t>(1) << 31;
+
+    if constexpr (receiver)
+    {
+        vole_receiver<P>(k, buffers.leaves, buffers.iv, tweak, buffers.u, buffers.q,
+                         buffers.delta_bytes.data());
+        consume_bytes(buffers.q, k * CP::VOLE_COL_BLOCKS * sizeof(vole_block));
+    }
+    else
+    {
+        vole_block correction[CP::VOLE_COL_BLOCKS];
+        vole_sender<P>(k, buffers.leaves, buffers.iv, tweak, buffers.u, buffers.v, correction);
+        consume_bytes(buffers.v, k * CP::VOLE_COL_BLOCKS * sizeof(vole_block));
+        consume_bytes(correction, CP::VOLE_ROWS / 8);
+    }
+}
+
 template <typename P> int run_profile(const std::string& scheme, const std::string& operation,
                                       size_t iterations)
 {
     using CP = typename P::CONSTS;
+    using VC = typename CP::VEC_COM;
     profile_buffers<P> buffers(0xface57ULL);
 
     double seconds = 0.0;
@@ -188,6 +296,31 @@ template <typename P> int run_profile(const std::string& scheme, const std::stri
                                consume_bytes(buffers.check.data(), buffers.check.size());
                            });
     }
+    else if (operation == "convert_to_vole_sender")
+    {
+        seconds = run_loop(iterations, [&] { run_convert_to_vole_sender<P>(buffers); });
+    }
+    else if (operation == "convert_to_vole_receiver")
+    {
+        seconds = run_loop(iterations, [&] { run_convert_to_vole_receiver<P>(buffers); });
+    }
+    else if (operation == "small_vole_sender_min")
+    {
+        seconds = run_loop(iterations,
+                           [&] { run_single_small_vole<P, false, false>(buffers); });
+    }
+    else if (operation == "small_vole_sender_max")
+    {
+        seconds = run_loop(iterations, [&] { run_single_small_vole<P, false, true>(buffers); });
+    }
+    else if (operation == "small_vole_receiver_min")
+    {
+        seconds = run_loop(iterations, [&] { run_single_small_vole<P, true, false>(buffers); });
+    }
+    else if (operation == "small_vole_receiver_max")
+    {
+        seconds = run_loop(iterations, [&] { run_single_small_vole<P, true, true>(buffers); });
+    }
     else
     {
         std::cerr << "Unknown operation: " << operation << "\n";
@@ -203,7 +336,16 @@ template <typename P> int run_profile(const std::string& scheme, const std::stri
               << "  \"ns_per_iteration\": " << ns_per_iter << ",\n"
               << "  \"commit_leaves\": " << P::bavc_t::COMMIT_LEAVES << ",\n"
               << "  \"hash_len\": " << P::leaf_hash_t::hash_len << ",\n"
+              << "  \"tau\": " << P::tau_v << ",\n"
+              << "  \"delta_bits\": " << P::delta_bits_v << ",\n"
+              << "  \"min_k\": " << VC::MIN_K << ",\n"
+              << "  \"max_k\": " << VC::MAX_K << ",\n"
+              << "  \"num_min_k\": " << VC::NUM_MIN_K << ",\n"
+              << "  \"num_max_k\": " << VC::NUM_MAX_K << ",\n"
               << "  \"vole_rows\": " << CP::VOLE_ROWS << ",\n"
+              << "  \"vole_col_blocks\": " << CP::VOLE_COL_BLOCKS << ",\n"
+              << "  \"vole_width\": " << CP::VOLE_WIDTH << ",\n"
+              << "  \"prg_vole_blocks\": " << CP::PRG_VOLE_BLOCKS << ",\n"
               << "  \"sink\": " << profile_sink << "\n"
               << "}\n";
     return 0;
@@ -219,7 +361,13 @@ int usage(const char* argv0)
               << "\nOperations:\n"
               << "  vole_commit\n"
               << "  vector_commit\n"
-              << "  hash_hashed_leaves\n";
+              << "  hash_hashed_leaves\n"
+              << "  convert_to_vole_sender\n"
+              << "  convert_to_vole_receiver\n"
+              << "  small_vole_sender_min\n"
+              << "  small_vole_sender_max\n"
+              << "  small_vole_receiver_min\n"
+              << "  small_vole_receiver_max\n";
     return 2;
 }
 
