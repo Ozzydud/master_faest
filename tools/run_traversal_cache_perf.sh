@@ -61,6 +61,7 @@ Operations: ${OPERATIONS}
 Events: ${PERF_EVENTS}
 
 Traversal modes:
+  original -> FAEST_TREE_TRAVERSAL=0
   dfs    -> FAEST_TREE_TRAVERSAL=1
   bfs    -> FAEST_TREE_TRAVERSAL=2
   hybrid -> FAEST_TREE_TRAVERSAL=3
@@ -152,6 +153,7 @@ run_catch2_measurement() {
 }
 
 declare -a MODES=(
+  "original:0"
   "dfs:1"
   "bfs:2"
   "hybrid:3"
